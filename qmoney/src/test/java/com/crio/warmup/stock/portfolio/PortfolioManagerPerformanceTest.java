@@ -1,12 +1,15 @@
 
 package com.crio.warmup.stock.portfolio;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 
 import com.crio.warmup.stock.dto.AnnualizedReturn;
 import com.crio.warmup.stock.dto.PortfolioTrade;
 import com.crio.warmup.stock.dto.TiingoCandle;
+import com.crio.warmup.stock.exception.StockQuoteServiceException;
 import com.crio.warmup.stock.quotes.StockQuotesService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,20 +26,16 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.web.client.RestTemplate;
 
 
 /*
 This class is supposed to be used by assessments only.
  */
 @ExtendWith(MockitoExtension.class)
-class PortfolioManagerTest {
+class PortfolioManagerPerformanceTest {
 
   @Mock
   private StockQuotesService stockQuotesService;
-
-  @Mock
-  private RestTemplate restTemplate;
 
   @Spy
   @InjectMocks
@@ -44,8 +43,8 @@ class PortfolioManagerTest {
 
   private String googlQuotes = "[{\"date\":\"2019-01-02T00:00:00.000Z\",\"close\":1054.68,"
       + "\"high\":1060.79,\"low\":1025.28,\"open\":1027.2,\"volume\":1593395,\"adjClose\":1054.68,"
-      + "\"adjHigh\":1060.79,\"adjLow\":1025.28,\""
-      + "adjOpen\":1027.2,\"adjVolume\":1593395,\"divCash\""
+      + "\"adjHigh\":1060.79,\"adjLow\":1025.28,\"adjOpen\""
+      + ":1027.2,\"adjVolume\":1593395,\"divCash\""
       + ":0.0,\"splitFactor\":1.0},{\"date\":\""
       + "2019-01-03T00:00:00.000Z\",\"close\":1025.47,\"high\""
       + ":1066.26,\"low\":1022.37,\"open\":1050.67,\"volume\":2097957,\"adjClose\":1025.47,"
@@ -81,59 +80,70 @@ class PortfolioManagerTest {
 
   @Test
   public void calculateExtrapolatedAnnualizedReturn()
-      throws Exception {
+      throws JsonProcessingException, StockQuoteServiceException, InterruptedException {
+    runConcurrencyTest(false);
+  }
+
+
+  @Test
+  public void calculateExtrapolatedAnnualizedReturnWithException() {
+    assertThrows(StockQuoteServiceException.class, () -> runConcurrencyTest(true));
+  }
+
+
+  private void runConcurrencyTest(boolean withException)
+      throws JsonProcessingException, StockQuoteServiceException, InterruptedException {
+    this.portfolioManager = getPortfolioManager(withException);
     //given
-    String moduleToRun = null;
-    moduleToRun = "REFACTOR";
-
-    moduleToRun = "ADDITIONAL_REFACTOR";
-
-    if (moduleToRun.equals("REFACTOR")) {
-      Mockito.doReturn(getCandles(aaplQuotes))
-          .when(portfolioManager).getStockQuote(eq("AAPL"), any(), any());
-      Mockito.doReturn(getCandles(msftQuotes))
-          .when(portfolioManager).getStockQuote(eq("MSFT"), any(), any());
-      Mockito.doReturn(getCandles(googlQuotes))
-          .when(portfolioManager).getStockQuote(eq("GOOGL"), any(), any());
-    }
     PortfolioTrade trade1 = new PortfolioTrade("AAPL", 50, LocalDate.parse("2019-01-02"));
     PortfolioTrade trade2 = new PortfolioTrade("GOOGL", 100, LocalDate.parse("2019-01-02"));
     PortfolioTrade trade3 = new PortfolioTrade("MSFT", 20, LocalDate.parse("2019-01-02"));
     List<PortfolioTrade> portfolioTrades = Arrays
         .asList(new PortfolioTrade[]{trade1, trade2, trade3});
-
-    if (moduleToRun.equals("ADDITIONAL_REFACTOR")) {
-      portfolioManager = new PortfolioManagerImpl(stockQuotesService);
-      Mockito.doReturn(getCandles(aaplQuotes))
-          .when(stockQuotesService).getStockQuote(eq("AAPL"), any(), any());
-      Mockito.doReturn(getCandles(msftQuotes))
-          .when(stockQuotesService).getStockQuote(eq("MSFT"), any(), any());
-      Mockito.doReturn(getCandles(googlQuotes))
-          .when(stockQuotesService).getStockQuote(eq("GOOGL"), any(), any());
-    }
+    long startTime = System.currentTimeMillis();
 
     //when
     List<AnnualizedReturn> annualizedReturns = portfolioManager
-        .calculateAnnualizedReturn(portfolioTrades, LocalDate.parse("2019-12-12"));
+        .calculateAnnualizedReturnParallel(portfolioTrades, LocalDate.parse("2019-12-12"), 5);
 
     //then
     List<String> symbols = annualizedReturns.stream().map(AnnualizedReturn::getSymbol)
         .collect(Collectors.toList());
-    Assertions.assertEquals(0.814, annualizedReturns.get(0).getAnnualizedReturn(), 0.01);
-    Assertions.assertEquals(0.584, annualizedReturns.get(1).getAnnualizedReturn(), 0.01);
-    Assertions.assertEquals(0.33, annualizedReturns.get(2).getAnnualizedReturn(),0.01);
+    Assertions.assertEquals(0.81, annualizedReturns.get(0).getAnnualizedReturn(), 0.01);
+    Assertions.assertEquals(0.58, annualizedReturns.get(1).getAnnualizedReturn(), 0.01);
+    Assertions.assertEquals(0.33, annualizedReturns.get(2).getAnnualizedReturn(), 0.01);
     Assertions.assertEquals(Arrays.asList(new String[]{"AAPL", "MSFT", "GOOGL"}), symbols);
 
+    Assertions.assertTrue(System.currentTimeMillis() - startTime < 6000,
+        "The task did not finish in time");
+  }
+
+  private PortfolioManagerImpl getPortfolioManager(boolean withException)
+      throws JsonProcessingException, StockQuoteServiceException {
+    Mockito.doAnswer(invocation -> getCandles(aaplQuotes, false))
+        .when(stockQuotesService).getStockQuote(eq("AAPL"), any(), any());
+    Mockito.doAnswer(invocation -> getCandles(msftQuotes, withException))
+        .when(stockQuotesService).getStockQuote(eq("MSFT"), any(), any());
+    Mockito.doAnswer(invocation -> getCandles(googlQuotes, withException))
+        .when(stockQuotesService).getStockQuote(eq("GOOGL"), any(), any());
+    return new PortfolioManagerImpl(stockQuotesService);
   }
 
 
-  private List<TiingoCandle> getCandles(String responseText) throws JsonProcessingException {
+  private List<TiingoCandle> getCandles(String responseText, boolean throwException)
+      throws JsonProcessingException {
+    try {
+      Thread.sleep(5000);
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    }
+    if (throwException) {
+      throw new RuntimeException("Failed to get data from service provider");
+    }
     ObjectMapper mapper = new ObjectMapper();
     mapper.registerModule(new JavaTimeModule());
     return Arrays.asList(mapper.readValue(responseText, TiingoCandle[].class));
   }
-
-
 
 }
 
